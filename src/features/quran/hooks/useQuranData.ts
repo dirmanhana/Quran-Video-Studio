@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { VerseData } from '../types';
 import { VideoConfig } from '../../video-editor/types';
+import { TRANSLATION_IDS } from '../../../shared/constants';
 
 // In-memory cache to persist data across component re-renders
 const textCache = new Map<number, any>();
@@ -22,8 +23,11 @@ export function useQuranData(config: VideoConfig) {
     let isMounted = true;
 
     const fetchData = async () => {
+      const translationLanguage = config.translationLanguage ?? 'en';
+      const translationId = TRANSLATION_IDS[translationLanguage];
+
       // Check cache immediately
-      const cachedText = textCache.get(config.surahId);
+      const cachedText = textCache.get(`${config.surahId}-${translationLanguage}` as any);
       const audioKey = `${config.reciterId}-${config.surahId}`;
       const cachedAudio = audioCache.get(audioKey);
 
@@ -59,7 +63,7 @@ export function useQuranData(config: VideoConfig) {
           setLoadingProgress("Fetching Text...");
           // Added per_page=300 to ensure we fetch the FULL surah at once (Max Ayahs is 286 in Surah 2)
           // This allows us to cache the entire text and slice it locally later.
-          const textUrl = `https://api.quran.com/api/v4/verses/by_chapter/${config.surahId}?language=en&words=true&translations=131&word_fields=text_uthmani,code_v1,code_v2,page_number,location&per_page=300`;
+          const textUrl = `https://api.quran.com/api/v4/verses/by_chapter/${config.surahId}?language=${translationLanguage}&words=true&translations=${translationId}&word_fields=text_uthmani,code_v1,code_v2,page_number,location&per_page=300`;
           
           const textRes = await fetch(textUrl);
           if (!textRes.ok) {
@@ -68,8 +72,8 @@ export function useQuranData(config: VideoConfig) {
           }
           const textJson = await textRes.json();
           tData = textJson.verses;
-          // Cache it
-          textCache.set(config.surahId, tData);
+          // Cache it (per language, since translations differ)
+          textCache.set(`${config.surahId}-${translationLanguage}` as any, tData);
         }
 
         // --- AUDIO DATA ---
@@ -116,7 +120,7 @@ export function useQuranData(config: VideoConfig) {
     fetchData();
 
     return () => { isMounted = false; };
-  }, [config.surahId, config.reciterId]);
+  }, [config.surahId, config.reciterId, config.translationLanguage]);
 
   // 2. Processing Effect (Triggered when raw data or verse range changes)
   // This is fast and synchronous (mostly), so it feels instant.

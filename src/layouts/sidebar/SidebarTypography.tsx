@@ -1,6 +1,6 @@
 import React from 'react';
 import { VideoConfig } from '../../features/video-editor/types';
-import { FONTS, ENGLISH_FONTS, AL_QADR_FONT } from '../../shared/constants';
+import { FONTS, ENGLISH_FONTS, AL_QADR_FONT, TRANSLATION_LANGUAGES } from '../../shared/constants';
 
 interface SidebarTypographyProps {
   config: VideoConfig;
@@ -97,6 +97,18 @@ export default function SidebarTypography({ config, setConfig, typoTab, setTypoT
             </div>
         ) : (
             <div className="space-y-4">
+                {/* Translation Language Selector */}
+                <div className="flex bg-[#1a1a1e] rounded-lg p-0.5 border border-white/5">
+                    {TRANSLATION_LANGUAGES.map((lang) => (
+                        <button
+                            key={lang.id}
+                            onClick={() => setConfig({ ...config, translationLanguage: lang.id })}
+                            className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all ${(config.translationLanguage ?? 'en') === lang.id ? 'bg-studio-accent text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                        >
+                            {lang.label}
+                        </button>
+                    ))}
+                </div>
                 <div className="grid grid-cols-3 gap-2">
                     {ENGLISH_FONTS.slice(0, 6).map(font => (
                         <button

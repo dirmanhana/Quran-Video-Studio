@@ -4,6 +4,7 @@ import { VideoConfig } from '../types';
 export const useAssetLoader = (config: VideoConfig) => {
     const bismillahImgRef = useRef<HTMLImageElement | null>(null);
     const bgImageRef = useRef<HTMLImageElement | null>(null);
+    const bgVideoRef = useRef<HTMLVideoElement | null>(null);
 
     // Load Bismillah Image
     useEffect(() => {
@@ -36,5 +37,51 @@ export const useAssetLoader = (config: VideoConfig) => {
         }
     }, [config.backgroundImage, config.backgroundType]);
 
-    return { bismillahImgRef, bgImageRef };
+    // Load Background Video (MP4/WebM) — always hard-muted, manual
+    // seamless loop (see background-utils). Drawn to canvas every frame.
+    useEffect(() => {
+        // Cleanup previous video element
+        if (bgVideoRef.current) {
+            bgVideoRef.current.pause();
+            bgVideoRef.current.removeAttribute('src');
+            bgVideoRef.current.load();
+            bgVideoRef.current = null;
+        }
+
+        if (config.backgroundType === 'video' && config.backgroundImage) {
+            const video = document.createElement('video');
+            // Mute BEFORE src: some browsers reset .muted on src assignment.
+            video.muted = true;
+            video.volume = 0;
+            (video as any).defaultMuted = true;
+            (video as any).disableRemotePlayback = true;
+            video.loop = false; // manual seamless loop instead (no black-frame flash)
+            video.playsInline = true;
+            video.setAttribute('playsinline', '');
+            video.crossOrigin = "anonymous";
+            video.preload = "auto";
+            video.src = config.backgroundImage;
+            // Re-enforce mute once metadata is in — Safari/Chrome can drop
+            // the flag when the media pipeline attaches to the new src.
+            video.addEventListener('loadedmetadata', () => {
+                video.muted = true;
+                video.volume = 0;
+            });
+            const tryPlay = () => video.play().catch(() => { /* retry on canplay */ });
+            video.addEventListener('canplay', tryPlay, { once: true });
+            video.load();
+            bgVideoRef.current = video;
+        }
+
+        return () => {
+            if (bgVideoRef.current) {
+                bgVideoRef.current.pause();
+                bgVideoRef.current.removeAttribute('src');
+                bgVideoRef.current.load();
+                bgVideoRef.current = null;
+            }
+        };
+    }, [config.backgroundImage, config.backgroundType]);
+
+    return { bismillahImgRef, bgImageRef, bgVideoRef };
 };

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, Upload, Trash2, Subtitles, Type } from 'lucide-react';
+import { Sparkles, Upload, Trash2, Subtitles, Type, Film } from 'lucide-react';
 import { VideoConfig } from '../../features/video-editor/types';
 import ColorPicker from '../../shared/components/ColorPicker';
 import { ToggleSwitch } from '../../shared/components/ToggleSwitch';
@@ -26,6 +26,26 @@ export default function SidebarStyle({ config, setConfig }: SidebarStyleProps) {
           };
           reader.readAsDataURL(file);
       }
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          // Object URL keeps large videos out of memory-hungry base64
+          const url = URL.createObjectURL(file);
+          setConfig({
+              ...config,
+              backgroundImage: url,
+              backgroundType: 'video'
+          });
+      }
+  };
+
+  const clearBackground = () => {
+      if (config.backgroundType === 'video' && config.backgroundImage?.startsWith('blob:')) {
+          URL.revokeObjectURL(config.backgroundImage);
+      }
+      setConfig({ ...config, backgroundImage: null });
   };
 
   return (
@@ -103,6 +123,12 @@ export default function SidebarStyle({ config, setConfig }: SidebarStyleProps) {
                     >
                         Image
                     </button>
+                    <button
+                        onClick={() => setConfig({...config, backgroundType: 'video'})}
+                        className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${config.backgroundType === 'video' ? 'bg-white/10 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >
+                        Video
+                    </button>
                 </div>
 
                 {config.backgroundType === 'color' ? (
@@ -110,6 +136,98 @@ export default function SidebarStyle({ config, setConfig }: SidebarStyleProps) {
                         <span className="text-sm text-zinc-400">Background Color</span>
                         <ColorPicker color={config.backgroundColor} onChange={(c) => setConfig({...config, backgroundColor: c})} />
                         </div>
+                ) : config.backgroundType === 'video' ? (
+                    <div className="space-y-4">
+                            {config.backgroundImage ? (
+                                <div className="relative group rounded-lg overflow-hidden border border-white/10 aspect-video bg-black/20">
+                                    <video src={config.backgroundImage} className="w-full h-full object-cover opacity-80" muted loop playsInline autoPlay />
+
+                                    {/* Click to Replace - Full Overlay */}
+                                    <label className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer z-10">
+                                    <Upload className="w-8 h-8 text-white mb-1" />
+                                    <span className="text-[10px] text-white font-bold uppercase tracking-wide">Change Video</span>
+                                    <input type="file" accept="video/mp4,video/webm" className="hidden" onChange={handleVideoUpload} />
+                                    </label>
+
+                                    {/* Remove Button - Top Right */}
+                                    <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        clearBackground();
+                                    }}
+                                    className="absolute top-2 right-2 p-1.5 bg-red-500/80 hover:bg-red-500 text-white rounded-md transition-colors z-20 pointer-events-auto"
+                                    title="Remove Video"
+                                    >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            ) : (
+                            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-white/10 rounded-lg hover:border-studio-accent/50 hover:bg-white/5 transition-all cursor-pointer group">
+                                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                    <Film className="w-8 h-8 text-zinc-500 group-hover:text-studio-accent mb-2 transition-colors" />
+                                    <p className="text-xs text-zinc-500 font-medium">Click to upload video (MP4/WebM)</p>
+                                </div>
+                                <input type="file" accept="video/mp4,video/webm" className="hidden" onChange={handleVideoUpload} />
+                            </label>
+                            )}
+
+                            {config.backgroundImage && (
+                                <>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-[10px] text-zinc-400 font-bold uppercase">
+                                        <span>Horizontal Position</span>
+                                        <span>{config.backgroundImageX}%</span>
+                                    </div>
+                                    <input
+                                        type="range" min="0" max="100"
+                                        value={config.backgroundImageX}
+                                        onChange={(e) => setConfig({...config, backgroundImageX: parseInt(e.target.value)})}
+                                        className="w-full accent-studio-accent h-2 bg-black/50 rounded-lg appearance-none cursor-pointer"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-[10px] text-zinc-400 font-bold uppercase">
+                                        <span>Vertical Position</span>
+                                        <span>{config.backgroundImageY ?? 50}%</span>
+                                    </div>
+                                    <input
+                                        type="range" min="0" max="100"
+                                        value={config.backgroundImageY ?? 50}
+                                        onChange={(e) => setConfig({...config, backgroundImageY: parseInt(e.target.value)})}
+                                        className="w-full accent-studio-accent h-2 bg-black/50 rounded-lg appearance-none cursor-pointer"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-[10px] text-zinc-400 font-bold uppercase">
+                                        <span>Overlay Opacity</span>
+                                        <span>{Math.round(config.backgroundImageOpacity * 100)}%</span>
+                                    </div>
+                                    <input
+                                        type="range" min="0" max="1" step="0.05"
+                                        value={config.backgroundImageOpacity}
+                                        onChange={(e) => setConfig({...config, backgroundImageOpacity: parseFloat(e.target.value)})}
+                                        className="w-full accent-studio-accent h-2 bg-black/50 rounded-lg appearance-none cursor-pointer"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-[10px] text-zinc-400 font-bold uppercase">
+                                        <span>Video Fit</span>
+                                    </div>
+                                    <div className="flex bg-black/40 p-1 rounded-lg">
+                                        {(['cover', 'contain', 'blur'] as const).map((fit) => (
+                                            <button
+                                                key={fit}
+                                                onClick={() => setConfig({...config, backgroundVideoFit: fit})}
+                                                className={`flex-1 py-1.5 text-[10px] font-bold rounded-md capitalize transition-all ${(config.backgroundVideoFit ?? 'cover') === fit ? 'bg-white/10 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            >
+                                                {fit}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                </>
+                            )}
+                    </div>
                 ) : (
                     <div className="space-y-4">
                             {config.backgroundImage ? (
@@ -127,7 +245,7 @@ export default function SidebarStyle({ config, setConfig }: SidebarStyleProps) {
                                     <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        setConfig({...config, backgroundImage: null});
+                                        clearBackground();
                                     }}
                                     className="absolute top-2 right-2 p-1.5 bg-red-500/80 hover:bg-red-500 text-white rounded-md transition-colors z-20 pointer-events-auto"
                                     title="Remove Image"
@@ -182,6 +300,22 @@ export default function SidebarStyle({ config, setConfig }: SidebarStyleProps) {
                                         onChange={(e) => setConfig({...config, backgroundImageOpacity: parseFloat(e.target.value)})}
                                         className="w-full accent-studio-accent h-2 bg-black/50 rounded-lg appearance-none cursor-pointer"
                                     />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-[10px] text-zinc-400 font-bold uppercase">
+                                        <span>Image Fit</span>
+                                    </div>
+                                    <div className="flex bg-black/40 p-1 rounded-lg">
+                                        {(['cover', 'contain', 'blur'] as const).map((fit) => (
+                                            <button
+                                                key={fit}
+                                                onClick={() => setConfig({...config, backgroundVideoFit: fit})}
+                                                className={`flex-1 py-1.5 text-[10px] font-bold rounded-md capitalize transition-all ${(config.backgroundVideoFit ?? 'cover') === fit ? 'bg-white/10 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                            >
+                                                {fit}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
                                 </>
                             )}

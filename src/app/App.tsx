@@ -18,7 +18,7 @@ export default function App() {
     surahId: 1,
     verseStart: 1,
     verseEnd: 7,
-    reciterId: 10, // Sa'ud ash-Shuraim (Default)
+    reciterId: 7, // Mishary Rashid al-Afasy (Default)
     fontFamily: 'v2', // Default KFC V2
     fontSize: 86, // Default 86px for V2
     wordSpacing: 4, // Default Word Spacing 4px
@@ -34,6 +34,8 @@ export default function App() {
 
     aspectRatio: '9:16',
     showTranslation: true,
+    translationLanguage: 'id',
+    backgroundVideoFit: 'cover',
     translationColor: '#a1a1aa',
     translationHighlightColor: '#ffffff', // Default Highlight White
     translationHighlightMode: 'karaoke', // Default Karaoke Mode

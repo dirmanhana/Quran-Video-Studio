@@ -1,5 +1,17 @@
 import { Reciter, QuranFont } from '../types';
 
+// Translation resource IDs on api.quran.com (v4)
+// 131 = The Clear Quran (English), 33 = Kemenag RI (Indonesian)
+export const TRANSLATION_IDS: Record<'en' | 'id', number> = {
+  en: 131,
+  id: 33,
+};
+
+export const TRANSLATION_LANGUAGES = [
+  { id: 'en' as const, label: 'English' },
+  { id: 'id' as const, label: 'Indonesia' },
+];
+
 export const RECITERS: Reciter[] = [
   { id: 19, name: "Ahmed ibn Ali al-Ajmy" },
   { id: 158, name: "Abdullah Ali Jabir" },

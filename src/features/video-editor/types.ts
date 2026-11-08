@@ -11,14 +11,16 @@ export interface VideoConfig {
   backgroundColor: string;
 
   // Background Image Support
-  backgroundType: 'color' | 'image';
+  backgroundType: 'color' | 'image' | 'video';
   backgroundImage: string | null;
   backgroundImageOpacity: number;
   backgroundImageX: number;
   backgroundImageY: number;
+  backgroundVideoFit: 'cover' | 'contain' | 'blur';
 
   aspectRatio: '9:16' | '16:9' | '1:1';
   showTranslation: boolean;
+  translationLanguage: 'en' | 'id';
   translationColor: string;
   translationHighlightColor: string; // New: Highlight color for translation
   translationHighlightMode: 'none' | 'karaoke' | 'word'; // New: Highlight mode

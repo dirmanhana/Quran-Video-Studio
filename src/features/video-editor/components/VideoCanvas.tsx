@@ -5,6 +5,14 @@ import { CANVAS_SIZES } from '../../../shared/constants';
 import { useFontLoader } from '../hooks/useFontLoader';
 import { useAssetLoader } from '../hooks/useAssetLoader';
 import { renderStreamMode, renderSingleMode, renderPageMode, StreamWordLayout } from '../utils/render-strategies';
+import {
+    drawBackground,
+    enforceBackgroundMute,
+    ensureVideoPlaying,
+    maybeRestartVideoForSeamlessLoop,
+    paintLoopBlend,
+    createLoopBlend,
+} from '../utils/background-utils';
 
 interface VideoCanvasProps {
   canvasRef: React.RefObject<HTMLCanvasElement>;
@@ -23,13 +31,14 @@ export default function VideoCanvas({
   audioRef, checkTime, isLoading, isExporting, loadingProgress
 }: VideoCanvasProps) {
 
-  const { bismillahImgRef, bgImageRef } = useAssetLoader(config);
+  const { bismillahImgRef, bgImageRef, bgVideoRef } = useAssetLoader(config);
   const { fontsLoaded } = useFontLoader(config, verses);
 
   const scratchCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number>(0);
   const cameraOffsetRef = useRef(0);
   const streamLayoutRef = useRef<{ words: StreamWordLayout[]; configSig: string; } | null>(null);
+  const loopBlendRef = useRef(createLoopBlend());
 
   useEffect(() => {
     if (!scratchCanvasRef.current) {
@@ -45,22 +54,21 @@ export default function VideoCanvas({
     checkTime();
 
     // 1. Clear & Background
-    if (config.backgroundType === 'image' && bgImageRef.current) {
-        const img = bgImageRef.current;
-        const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
-        const scaledWidth = img.width * scale;
-        const scaledHeight = img.height * scale;
-
-        const posX = config.backgroundImageX ?? 50;
-        const x = (canvas.width - scaledWidth) * (posX / 100);
-
-        const posY = config.backgroundImageY ?? 50;
-        const y = (canvas.height - scaledHeight) * (posY / 100);
-
-        ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
-        ctx.fillStyle = `rgba(0,0,0,${config.backgroundImageOpacity})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    if (config.backgroundType === 'image') {
+        drawBackground(ctx, canvas, config, bgImageRef.current);
+    } else if (config.backgroundType === 'video') {
+        const bgVideo = bgVideoRef.current;
+        if (bgVideo) {
+            // Background video must never be heard.
+            enforceBackgroundMute(bgVideo);
+            // Keep it running (browsers throttle offscreen/autoplay media).
+            ensureVideoPlaying(bgVideo);
+            // Restart just before the end so there is no black-frame flash.
+            maybeRestartVideoForSeamlessLoop(bgVideo, canvas, loopBlendRef.current);
+        }
+        // drawImage(video) paints the current video frame — motion is
+        // automatic in preview, and export captures it frame-by-frame.
+        drawBackground(ctx, canvas, config, bgVideo);
     } else {
         ctx.fillStyle = config.backgroundColor;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -219,6 +227,11 @@ export default function VideoCanvas({
                 charCount += l.length;
             });
         }
+    }
+
+    // Loop seam crossfade — painted last so it covers the whole scene.
+    if (config.backgroundType === 'video') {
+        paintLoopBlend(ctx, canvas, loopBlendRef.current);
     }
   };
 

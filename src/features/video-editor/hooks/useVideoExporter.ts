@@ -163,10 +163,57 @@ export function useVideoExporter(
 
         // 5. Fetch and Decode Audio
         setExportStatus("Processing Audio...");
-        const audioCtx = new AudioContext({ sampleRate: audioSampleRate });
         const audioResp = await fetch(audioUrl);
+        if (!audioResp.ok) {
+            throw new Error(
+                `Failed to download recitation audio (HTTP ${audioResp.status} ${audioResp.statusText}). ` +
+                `Try a different reciter or check your connection.`
+            );
+        }
         const audioArrayBuffer = await audioResp.arrayBuffer();
-        const audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer);
+        if (audioArrayBuffer.byteLength < 1024) {
+            throw new Error(
+                `Downloaded audio is too small (${audioArrayBuffer.byteLength} bytes) — ` +
+                `the audio file may be unavailable for this reciter/surah.`
+            );
+        }
+        // Sanity-check magic bytes (MP3: ID3 or frame sync FF Ex / OggS / fLaC / RIFF)
+        const magic = new Uint8Array(audioArrayBuffer.slice(0, 4));
+        const isKnownAudio =
+            (magic[0] === 0x49 && magic[1] === 0x44 && magic[2] === 0x33) || // ID3
+            (magic[0] === 0xFF && (magic[1] & 0xE0) === 0xE0) ||              // MP3 frame sync
+            (magic[0] === 0x4F && magic[1] === 0x67 && magic[2] === 0x67 && magic[3] === 0x53) || // OggS
+            (magic[0] === 0x66 && magic[1] === 0x4C && magic[2] === 0x61 && magic[3] === 0x43) || // fLaC
+            (magic[0] === 0x52 && magic[1] === 0x49 && magic[2] === 0x46 && magic[3] === 0x46);   // RIFF/WAV
+        if (!isKnownAudio) {
+            const preview = new TextDecoder().decode(audioArrayBuffer.slice(0, 120));
+            throw new Error(
+                `Downloaded file is not audio (starts with: ${JSON.stringify(preview.slice(0, 80))}). ` +
+                `The CDN may have returned an error page. Try again or pick another reciter.`
+            );
+        }
+
+        let audioBuffer: AudioBuffer;
+        let audioCtx: AudioContext | null = null;
+        try {
+            // Forced sampleRate can break decoding of some MP3s; try the
+            // target rate first, then fall back to the default context.
+            try {
+                audioCtx = new AudioContext({ sampleRate: audioSampleRate });
+                audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer.slice(0));
+            } catch (firstErr) {
+                console.warn("decodeAudioData with forced sampleRate failed, retrying with default:", firstErr);
+                try { await audioCtx?.close(); } catch { /* ignore */ }
+                audioCtx = new AudioContext();
+                audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer.slice(0));
+            }
+        } catch (decodeErr: any) {
+            throw new Error(
+                `Unable to decode audio data (${decodeErr?.message || decodeErr}). ` +
+                `This browser may lack an MP3 decoder — please use official Google Chrome or Edge. ` +
+                `Audio URL: ${audioUrl}`
+            );
+        }
 
         // Slice Audio Buffer
         const startSample = Math.floor(startTime * audioSampleRate);
