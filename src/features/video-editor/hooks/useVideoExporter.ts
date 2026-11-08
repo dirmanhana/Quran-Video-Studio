@@ -2,9 +2,35 @@ import React, { useState } from 'react';
 import * as Mp4Muxer from 'mp4-muxer';
 import { VideoConfig } from '../types';
 import { VerseData } from '../../quran/types';
-import { CANVAS_SIZES, RECITERS } from '../../../shared/constants';
+import { CANVAS_SIZES, RECITERS, AYAH_AUDIO_CDN, AYAH_AUDIO_RECITER_IDS } from '../../../shared/constants';
 import { SURAHS } from '../../quran/data/surahs';
 import { saveVideoFile } from '../../../shared/utils/tauri-fs';
+
+// ---------------------------------------------------------------------------
+// Per-ayah audio download (inspired by ra1d7/quranvidgen).
+// Full-surah audio files can be huge (Al-Baqarah ≈ 116 MB) and decoding them
+// whole exhausts memory / makes decodeAudioData fail. Instead, fetch each
+// verse's small MP3 (~100-200 KB) from the per-ayah CDN, decode separately,
+// and stitch them on the timeline using verse_timings. Falls back to the
+// full-file download when per-ayah audio is unavailable for a reciter.
+// ---------------------------------------------------------------------------
+
+function assertKnownAudio(data: ArrayBuffer): void {
+    const magic = new Uint8Array(data.slice(0, 4));
+    const isKnownAudio =
+        (magic[0] === 0x49 && magic[1] === 0x44 && magic[2] === 0x33) || // ID3
+        (magic[0] === 0xFF && (magic[1] & 0xE0) === 0xE0) ||              // MP3 frame sync
+        (magic[0] === 0x4F && magic[1] === 0x67 && magic[2] === 0x67 && magic[3] === 0x53) || // OggS
+        (magic[0] === 0x66 && magic[1] === 0x4C && magic[2] === 0x61 && magic[3] === 0x43) || // fLaC
+        (magic[0] === 0x52 && magic[1] === 0x49 && magic[2] === 0x46 && magic[3] === 0x46);   // RIFF/WAV
+    if (!isKnownAudio) {
+        const preview = new TextDecoder().decode(data.slice(0, 120));
+        throw new Error(
+            `Downloaded file is not audio (starts with: ${JSON.stringify(preview.slice(0, 80))}). ` +
+            `The CDN may have returned an error page. Try again or pick another reciter.`
+        );
+    }
+}
 
 export function useVideoExporter(
   config: VideoConfig,
@@ -162,79 +188,157 @@ export function useVideoExporter(
         }
 
         // 5. Fetch and Decode Audio
+        // Full-surah files can be huge (Al-Baqarah ≈ 116 MB) and decoding them
+        // whole fails. Prefer per-ayah MP3s (~100-200 KB each, same source as
+        // ra1d7/quranvidgen), stitched on the verse_timings timeline.
+        // Falls back to the full-file download for unmapped reciters.
         setExportStatus("Processing Audio...");
-        const audioResp = await fetch(audioUrl);
-        if (!audioResp.ok) {
-            throw new Error(
-                `Failed to download recitation audio (HTTP ${audioResp.status} ${audioResp.statusText}). ` +
-                `Try a different reciter or check your connection.`
-            );
-        }
-        const audioArrayBuffer = await audioResp.arrayBuffer();
-        if (audioArrayBuffer.byteLength < 1024) {
-            throw new Error(
-                `Downloaded audio is too small (${audioArrayBuffer.byteLength} bytes) — ` +
-                `the audio file may be unavailable for this reciter/surah.`
-            );
-        }
-        // Sanity-check magic bytes (MP3: ID3 or frame sync FF Ex / OggS / fLaC / RIFF)
-        const magic = new Uint8Array(audioArrayBuffer.slice(0, 4));
-        const isKnownAudio =
-            (magic[0] === 0x49 && magic[1] === 0x44 && magic[2] === 0x33) || // ID3
-            (magic[0] === 0xFF && (magic[1] & 0xE0) === 0xE0) ||              // MP3 frame sync
-            (magic[0] === 0x4F && magic[1] === 0x67 && magic[2] === 0x67 && magic[3] === 0x53) || // OggS
-            (magic[0] === 0x66 && magic[1] === 0x4C && magic[2] === 0x61 && magic[3] === 0x43) || // fLaC
-            (magic[0] === 0x52 && magic[1] === 0x49 && magic[2] === 0x46 && magic[3] === 0x46);   // RIFF/WAV
-        if (!isKnownAudio) {
-            const preview = new TextDecoder().decode(audioArrayBuffer.slice(0, 120));
-            throw new Error(
-                `Downloaded file is not audio (starts with: ${JSON.stringify(preview.slice(0, 80))}). ` +
-                `The CDN may have returned an error page. Try again or pick another reciter.`
-            );
-        }
 
-        let audioBuffer: AudioBuffer;
-        let audioCtx: AudioContext | null = null;
-        try {
-            // Forced sampleRate can break decoding of some MP3s; try the
-            // target rate first, then fall back to the default context.
+        // Timeline buffer covering [startTime, endTime) at audioSampleRate.
+        // Built either from per-ayah files or from the sliced full file.
+        let slicedBuffer: AudioBuffer | null = null;
+
+        const decodeBuffer = async (data: ArrayBuffer): Promise<AudioBuffer> => {
+            let ctx: AudioContext | null = null;
             try {
-                audioCtx = new AudioContext({ sampleRate: audioSampleRate });
-                audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer.slice(0));
-            } catch (firstErr) {
-                console.warn("decodeAudioData with forced sampleRate failed, retrying with default:", firstErr);
-                try { await audioCtx?.close(); } catch { /* ignore */ }
-                audioCtx = new AudioContext();
-                audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer.slice(0));
+                // Forced sampleRate can break decoding of some MP3s; try the
+                // target rate first, then fall back to the default context.
+                try {
+                    ctx = new AudioContext({ sampleRate: audioSampleRate });
+                    return await ctx.decodeAudioData(data.slice(0));
+                } catch (firstErr) {
+                    console.warn("decodeAudioData with forced sampleRate failed, retrying with default:", firstErr);
+                    try { await ctx?.close(); } catch { /* ignore */ }
+                    ctx = new AudioContext();
+                    return await ctx.decodeAudioData(data.slice(0));
+                }
+            } catch (decodeErr: any) {
+                throw new Error(
+                    `Unable to decode audio data (${decodeErr?.message || decodeErr}). ` +
+                    `This browser may lack an MP3 decoder — please use official Google Chrome or Edge. ` +
+                    `Audio URL: ${audioUrl}`
+                );
+            } finally {
+                try { await ctx?.close(); } catch { /* ignore */ }
             }
-        } catch (decodeErr: any) {
-            throw new Error(
-                `Unable to decode audio data (${decodeErr?.message || decodeErr}). ` +
-                `This browser may lack an MP3 decoder — please use official Google Chrome or Edge. ` +
-                `Audio URL: ${audioUrl}`
-            );
+        };
+
+        const perAyahId = AYAH_AUDIO_RECITER_IDS[config.reciterId];
+        let builtFromPerAyah = false;
+
+        if (perAyahId !== undefined) {
+            try {
+                const totalLen = Math.max(1, Math.ceil(duration * audioSampleRate));
+                const timeline = new AudioContext({ sampleRate: audioSampleRate }).createBuffer(2, totalLen, audioSampleRate);
+                const ch0 = timeline.getChannelData(0);
+                const ch1 = timeline.getChannelData(1);
+
+                const limited = async <T>(tasks: (() => Promise<T>)[], n: number): Promise<T[]> => {
+                    const out: T[] = new Array(tasks.length);
+                    let i = 0;
+                    const workers = new Array(Math.min(n, tasks.length)).fill(0).map(async () => {
+                        while (i < tasks.length) {
+                            const idx = i++;
+                            out[idx] = await tasks[idx]();
+                        }
+                    });
+                    await Promise.all(workers);
+                    return out;
+                };
+
+                const decoded = await limited(
+                    verses.map((v, vi) => async () => {
+                        setExportStatus(`Processing Audio... (${vi + 1}/${verses.length})`);
+                        const url = `${AYAH_AUDIO_CDN}/${perAyahId}/${config.surahId}_${v.verseNumber}.mp3`;
+                        const resp = await fetch(url);
+                        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+                        const buf = await resp.arrayBuffer();
+                        assertKnownAudio(buf);
+                        return decodeBuffer(buf);
+                    }),
+                    4
+                );
+
+                // Stitch each decoded ayah at its verse_timing offset.
+                decoded.forEach((ab, vi) => {
+                    const v = verses[vi];
+                    const verseStartS = v.timing ? (v.timing.timestamp_from / 1000) - startTime : 0;
+                    const rateRatio = ab.sampleRate / audioSampleRate;
+                    const src0 = ab.getChannelData(0);
+                    const src1 = ab.getChannelData(Math.min(1, ab.numberOfChannels - 1));
+                    const destOffset = Math.max(0, Math.round(verseStartS * audioSampleRate));
+                    const copyLen = Math.min(src0.length, totalLen - destOffset);
+                    for (let s = 0; s < copyLen; s++) {
+                        const srcIdx = Math.min(src0.length - 1, Math.floor(s * rateRatio));
+                        if (destOffset + s < totalLen) {
+                            ch0[destOffset + s] += src0[srcIdx] || 0;
+                            ch1[destOffset + s] += src1[srcIdx] || 0;
+                        }
+                    }
+                });
+
+                slicedBuffer = timeline;
+                builtFromPerAyah = true;
+                console.log(`Per-ayah audio: ${verses.length} files stitched for ${config.surahId}:${config.verseStart}-${config.verseEnd}`);
+            } catch (perAyahErr) {
+                console.warn("Per-ayah audio failed, falling back to full-file download:", perAyahErr);
+            }
         }
 
-        // Slice Audio Buffer
-        const startSample = Math.floor(startTime * audioSampleRate);
-        const endSample = Math.floor(endTime * audioSampleRate);
-        const length = endSample - startSample;
+        if (!builtFromPerAyah) {
+            const audioResp = await fetch(audioUrl);
+            if (!audioResp.ok) {
+                throw new Error(
+                    `Failed to download recitation audio (HTTP ${audioResp.status} ${audioResp.statusText}). ` +
+                    `Try a different reciter or check your connection.`
+                );
+            }
+            const audioArrayBuffer = await audioResp.arrayBuffer();
+            if (audioArrayBuffer.byteLength < 1024) {
+                throw new Error(
+                    `Downloaded audio is too small (${audioArrayBuffer.byteLength} bytes) — ` +
+                    `the audio file may be unavailable for this reciter/surah.`
+                );
+            }
+            assertKnownAudio(audioArrayBuffer);
+            const audioBuffer = await decodeBuffer(audioArrayBuffer);
+
+            // Slice Audio Buffer
+            const startSample = Math.floor(startTime * audioSampleRate);
+            const endSample = Math.min(
+                Math.ceil(endTime * audioSampleRate),
+                Math.floor(audioBuffer.duration * audioBuffer.sampleRate)
+            );
+            const length = endSample - startSample;
+            if (length <= 0) {
+                throw new Error("Invalid audio duration (" + length + " samples).");
+            }
+            // Resample-safe copy: decodeAudioData returns the context rate,
+            // which may differ from audioSampleRate on the fallback path.
+            const decodedRate = audioBuffer.sampleRate;
+            slicedBuffer = new AudioContext({ sampleRate: audioSampleRate }).createBuffer(2, length, audioSampleRate);
+
+            for (let channel = 0; channel < 2; channel++) {
+                const srcChannel = audioBuffer.getChannelData(Math.min(channel, audioBuffer.numberOfChannels - 1));
+                const slicedData = slicedBuffer.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    const srcIdx = Math.min(
+                        srcChannel.length - 1,
+                        Math.floor(((startSample + i) / audioSampleRate) * decodedRate)
+                    );
+                    slicedData[i] = srcChannel[srcIdx] || 0;
+                }
+            }
+        }
+
+        const length = slicedBuffer!.length;
         if (length <= 0) {
             throw new Error("Invalid audio duration (" + length + " samples).");
         }
-        const slicedBuffer = audioCtx.createBuffer(2, length, audioSampleRate);
-
-        for (let channel = 0; channel < 2; channel++) {
-            const channelData = audioBuffer.getChannelData(Math.min(channel, audioBuffer.numberOfChannels - 1));
-            const slicedData = slicedBuffer.getChannelData(channel);
-            for (let i = 0; i < length; i++) {
-                slicedData[i] = channelData[startSample + i] || 0;
-            }
-        }
 
         // Interleave audio data for AudioData
-        const left = slicedBuffer.getChannelData(0);
-        const right = slicedBuffer.getChannelData(1);
+        const left = slicedBuffer!.getChannelData(0);
+        const right = slicedBuffer!.getChannelData(1);
         const interleaved = new Float32Array(length * 2);
         for (let i = 0; i < length; i++) {
             interleaved[i * 2] = left[i];

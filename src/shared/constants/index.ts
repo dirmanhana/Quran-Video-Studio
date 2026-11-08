@@ -12,6 +12,20 @@ export const TRANSLATION_LANGUAGES = [
   { id: 'id' as const, label: 'Indonesia' },
 ];
 
+// Per-ayah audio CDN (same source used by ra1d7/quranvidgen).
+// Small per-verse MP3s (~100-200 KB) instead of full-surah files (up to 116 MB).
+export const AYAH_AUDIO_CDN = 'https://quranaudio.pages.dev';
+
+// Maps our reciter IDs (api.quran.com QDC) to the per-ayah CDN reciter IDs.
+// CDN only hosts: 1=Mishary, 2=Shatri, 3=Qatami, 4=Dosari, 5=Rifai.
+export const AYAH_AUDIO_RECITER_IDS: Record<number | string, number> = {
+  7: 1,   // Mishary Rashid al-Afasy (QDC) -> Mishary (CDN)
+  173: 1, // Mishary Rashid al-Afasy alt (QDC) -> Mishary (CDN)
+  4: 2,   // Abu Bakr al-Shatri (QDC) -> Shatri (CDN)
+  174: 4, // Yasser Ad Dussary (QDC) -> Yasser Al Dosari (CDN)
+  5: 5,   // Hani ar-Rifai (QDC) -> Hani Ar Rifai (CDN)
+};
+
 export const RECITERS: Reciter[] = [
   { id: 19, name: "Ahmed ibn Ali al-Ajmy" },
   { id: 158, name: "Abdullah Ali Jabir" },
