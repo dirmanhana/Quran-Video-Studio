@@ -47,6 +47,50 @@ export function useVideoExporter(
         const height = CANVAS_SIZES[config.aspectRatio].height;
 
         // 2. Setup MP4 Muxer
+        // Chrome on Linux lacks a proprietary AAC encoder, but always
+        // supports Opus. Pick the first codec the browser supports.
+        let audioMuxerCodec: 'aac' | 'opus' = 'aac';
+        let audioEncoderCodec = 'mp4a.40.2'; // AAC LC
+
+        if (typeof AudioEncoder === "undefined") {
+            throw new Error("AudioEncoder is not supported in this browser. Please use Chrome or Edge.");
+        }
+
+        const isConfigSupportedFn = (AudioEncoder as any).isConfigSupported;
+        const aacConfig = {
+            codec: 'mp4a.40.2',
+            numberOfChannels: 2,
+            sampleRate: 44100,
+            bitrate: 128_000
+        };
+        const opusConfig = {
+            codec: 'opus',
+            numberOfChannels: 2,
+            sampleRate: 48000,
+            bitrate: 128_000
+        };
+
+        if (typeof isConfigSupportedFn === 'function') {
+            const aacSupport = await isConfigSupportedFn.call(AudioEncoder, aacConfig);
+            if (aacSupport?.supported) {
+                audioMuxerCodec = 'aac';
+                audioEncoderCodec = 'mp4a.40.2';
+            } else {
+                const opusSupport = await isConfigSupportedFn.call(AudioEncoder, opusConfig);
+                if (opusSupport?.supported) {
+                    audioMuxerCodec = 'opus';
+                    audioEncoderCodec = 'opus';
+                } else {
+                    throw new Error(
+                        "Neither AAC nor Opus audio encoding is supported in this browser. " +
+                        "Please use a recent Chrome or Edge."
+                    );
+                }
+            }
+        }
+
+        const audioSampleRate = audioMuxerCodec === 'opus' ? 48000 : 44100;
+
         const muxer = new Mp4Muxer.Muxer({
             target: new Mp4Muxer.ArrayBufferTarget(),
             video: {
@@ -55,17 +99,21 @@ export function useVideoExporter(
                 height
             },
             audio: {
-                codec: 'aac',
+                codec: audioMuxerCodec,
                 numberOfChannels: 2,
-                sampleRate: 44100
+                sampleRate: audioSampleRate
             },
             fastStart: 'in-memory'
         });
 
         // 3. Setup Video Encoder
+        let videoEncoderError: any = null;
         const videoEncoder = new VideoEncoder({
             output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-            error: (e) => console.error("Video Encoder Error", e)
+            error: (e) => {
+                console.error("Video Encoder Error", e);
+                if (!videoEncoderError) videoEncoderError = e;
+            }
         });
 
         videoEncoder.configure({
@@ -76,34 +124,61 @@ export function useVideoExporter(
             framerate: fps
         });
 
+        if ((videoEncoder as any).state !== 'configured') {
+            throw new Error("VideoEncoder failed to configure (state=" + (videoEncoder as any).state + "). See console 'Video Encoder Error' for details.");
+        }
+
         // 4. Setup Audio Encoder
+        const audioEncoderConfig = audioMuxerCodec === 'opus'
+            ? {
+                codec: 'opus',
+                numberOfChannels: 2,
+                sampleRate: 48000,
+                bitrate: 128_000
+            }
+            : {
+                codec: audioEncoderCodec,
+                numberOfChannels: 2,
+                sampleRate: audioSampleRate,
+                bitrate: 128_000
+            };
+
+        let audioEncoderError: any = null;
         const audioEncoder = new AudioEncoder({
             output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-            error: (e) => console.error("Audio Encoder Error", e)
+            error: (e) => {
+                console.error("Audio Encoder Error", e);
+                if (!audioEncoderError) audioEncoderError = e;
+            }
         });
 
-        audioEncoder.configure({
-            codec: 'mp4a.40.2', // AAC LC
-            numberOfChannels: 2,
-            sampleRate: 44100,
-            bitrate: 128_000
-        });
+        audioEncoder.configure(audioEncoderConfig);
+
+        if ((audioEncoder as any).state !== 'configured') {
+            throw new Error(
+                "AudioEncoder failed to configure (state=" + (audioEncoder as any).state + "). " +
+                "See console 'Audio Encoder Error' for the real cause."
+            );
+        }
 
         // 5. Fetch and Decode Audio
         setExportStatus("Processing Audio...");
-        const audioCtx = new AudioContext({ sampleRate: 44100 });
+        const audioCtx = new AudioContext({ sampleRate: audioSampleRate });
         const audioResp = await fetch(audioUrl);
         const audioArrayBuffer = await audioResp.arrayBuffer();
         const audioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer);
 
         // Slice Audio Buffer
-        const startSample = Math.floor(startTime * 44100);
-        const endSample = Math.floor(endTime * 44100);
+        const startSample = Math.floor(startTime * audioSampleRate);
+        const endSample = Math.floor(endTime * audioSampleRate);
         const length = endSample - startSample;
-        const slicedBuffer = audioCtx.createBuffer(2, length, 44100);
+        if (length <= 0) {
+            throw new Error("Invalid audio duration (" + length + " samples).");
+        }
+        const slicedBuffer = audioCtx.createBuffer(2, length, audioSampleRate);
 
         for (let channel = 0; channel < 2; channel++) {
-            const channelData = audioBuffer.getChannelData(channel);
+            const channelData = audioBuffer.getChannelData(Math.min(channel, audioBuffer.numberOfChannels - 1));
             const slicedData = slicedBuffer.getChannelData(channel);
             for (let i = 0; i < length; i++) {
                 slicedData[i] = channelData[startSample + i] || 0;
@@ -118,20 +193,30 @@ export function useVideoExporter(
             interleaved[i * 2] = left[i];
             interleaved[i * 2 + 1] = right[i];
         }
-        
-        // Create AudioData directly from interleaved buffer
-        const finalAudioData = new AudioData({
-            format: 'f32',
-            numberOfChannels: 2,
-            numberOfFrames: length,
-            sampleRate: 44100,
-            timestamp: 0,
-            data: interleaved
-        });
 
-        audioEncoder.encode(finalAudioData);
+        // Encode audio in chunks with correct timestamps (one giant
+        // encode/flush combo breaks AAC framing on some browsers).
+        const CHUNK_FRAMES = 4096;
+        for (let offset = 0; offset < length; offset += CHUNK_FRAMES) {
+            const frames = Math.min(CHUNK_FRAMES, length - offset);
+            const chunkData = new AudioData({
+                format: 'f32',
+                numberOfChannels: 2,
+                numberOfFrames: frames,
+                sampleRate: audioSampleRate,
+                timestamp: Math.round((offset / audioSampleRate) * 1_000_000),
+                data: interleaved.subarray(offset * 2, (offset + frames) * 2)
+            });
+
+            audioEncoder.encode(chunkData);
+            chunkData.close();
+        }
         await audioEncoder.flush();
-        finalAudioData.close();
+        await audioEncoder.close();
+
+        if (audioEncoderError) {
+            throw new Error("Audio encoding failed: " + (audioEncoderError?.message || audioEncoderError));
+        }
 
         // 6. Render Video Frames
         setExportStatus("Rendering Video Frames...");
